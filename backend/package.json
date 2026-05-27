@@ -1,0 +1,29 @@
+{
+  "name": "certificate-backend",
+  "version": "1.0.0",
+  "description": "Certificate Verification Backend API",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "test": "jest --verbose --testTimeout=10000"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@hyperledger/fabric-gateway": "^1.11.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "joi": "^17.13.3",
+    "kubo-rpc-client": "^7.0.0",
+    "multer": "^2.1.1",
+    "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2"
+  }
+}

@@ -1,0 +1,17 @@
+# Defines all organizations and their identities
+# cryptogen uses this to generate X.509 certificates for every participant
+
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    Specs:
+      - Hostname: orderer
+
+PeerOrgs:
+  - Name: Org1
+    Domain: org1.example.com
+    EnableNodeOUs: true   # enables peer/client/admin role separation
+    Template:
+      Count: 1            # 1 peer node
+    Users:
+      Count: 2            # 2 extra users (Issuer + Student — Admin is auto-generated)

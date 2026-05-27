@@ -1,0 +1,15 @@
+* text=auto
+
+# Ensure shell scripts always use LF (Unix) line endings, otherwise they will fail in Docker/Linux
+*.sh text eol=lf
+
+# Keep Fabric configuration files as LF
+*.yaml text eol=lf
+
+# Make sure crypto materials and certificates are handled correctly
+*.pem text eol=lf
+*sk text eol=lf
+
+# Treat binary files as binary
+*.block binary
+*.tx binary
