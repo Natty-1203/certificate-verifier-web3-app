@@ -14,16 +14,25 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
     "@hyperledger/fabric-gateway": "^1.11.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.2",
     "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.3",
     "kubo-rpc-client": "^7.0.0",
     "multer": "^2.1.1",
+    "pg": "^8.21.0",
+    "pg-hstore": "^2.3.4",
+    "qrcode": "^1.5.4",
+    "sequelize": "^6.37.8",
+    "uuid": "^14.0.0",
     "winston": "^3.19.0"
   },
   "devDependencies": {
     "jest": "^29.7.0",
     "nodemon": "^3.1.14",
+    "sequelize-cli": "^6.6.5",
     "supertest": "^7.2.2"
   }
 }
