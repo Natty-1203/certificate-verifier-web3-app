@@ -17,10 +17,10 @@ require('dotenv').config({
     path: path.resolve(__dirname, '../../.env')
 });
 
-// ── Debug — remove these lines once it works ──────────────────────────────────
-console.log('PROJECT_ROOT  :', PROJECT_ROOT);
+// ── for Debuging — 
+/*console.log('PROJECT_ROOT  :', PROJECT_ROOT);
 console.log('TLS cert path :', process.env.FABRIC_TLS_CERT_PATH);
-console.log('ISSUER cert   :', process.env.FABRIC_CERT_PATH_ISSUER);
+console.log('ISSUER cert   :', process.env.FABRIC_CERT_PATH_ISSUER);*/
 
 // ── Resolve a .env path (relative to project root) → absolute path ────────────
 function resolvePath(envPath) {

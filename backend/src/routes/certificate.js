@@ -2,6 +2,7 @@
 
 const { Router } = require('express');
 const multer     = require('multer');
+const { parse }  = require('csv-parse/sync');
 const { asyncHandler }      = require('../middleware/errorHandler');
 const { verifyToken }       = require('../middleware/auth');
 const { requireRole }       = require('../middleware/roles');
@@ -9,6 +10,7 @@ const fabricGateway         = require('../fabric/gateway');
 const { uploadToIPFS, computeSHA256 } = require('../utils/ipfs');
 const { generateQRCode }    = require('../utils/qrGenerator');
 const { Certificate, VerificationLog } = require('../database');
+const { sendEmail, certificateIssuedEmail } = require('../utils/email');
 const { Op }                = require('sequelize');
 const logger                = require('../utils/logger');
 
@@ -44,6 +46,131 @@ function formatCertificate(cert) {
         revocationReason: cert.revocation_reason || cert.revocationReason || null,
     };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/certificates/batch-issue
+// Auth: Issuer or Admin
+// Accepts a CSV file with columns: student_id, full_name, department, cgpa, graduation_year
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/batch-issue',
+    verifyToken,
+    requireRole(['Admin', 'Issuer']),
+    upload.single('csv'),
+    asyncHandler(async (req, res) => {
+        if (!req.file) {
+            return res.status(400).json({ message: 'CSV file is required.' });
+        }
+
+        const csvText = req.file.buffer.toString('utf-8');
+        let records;
+        try {
+            records = parse(csvText, {
+                columns: true,
+                skip_empty_lines: true,
+                trim: true,
+            });
+        } catch (err) {
+            return res.status(400).json({ message: 'Invalid CSV format: ' + err.message });
+        }
+
+        if (records.length === 0) {
+            return res.status(400).json({ message: 'CSV file is empty.' });
+        }
+
+        const results = { success: [], errors: [] };
+
+        for (let i = 0; i < records.length; i++) {
+            const row = records[i];
+            const rowNum = i + 2; // +2 for header row + 1-indexed
+
+            try {
+                const student_id = row.student_id || row.studentId || '';
+                const full_name = row.full_name || row.fullName || row.student_name || row.studentName || '';
+                const department = row.department || '';
+                const cgpa = parseFloat(row.cgpa || row.CGPA || '0');
+                const graduation_year = row.graduation_year || row.graduationYear || '';
+
+                if (!student_id || !full_name || !department || !cgpa || !graduation_year) {
+                    results.errors.push({ row: rowNum, message: 'Missing required fields', data: row });
+                    continue;
+                }
+
+                if (isNaN(cgpa) || cgpa < 2.0 || cgpa > 4.0) {
+                    results.errors.push({ row: rowNum, message: 'Invalid CGPA (must be 2.0-4.0)', data: row });
+                    continue;
+                }
+
+                const certificateId = `AASTU-${graduation_year}-${student_id.replace(/[^0-9]/g, '').slice(-4) || String(i + 1).padStart(4, '0')}`;
+                const dummyBuffer = Buffer.from(`AASTU Certificate: ${certificateId}\nStudent: ${full_name}\nStudent ID: ${student_id}\nDepartment: ${department}\nCGPA: ${cgpa}\nYear: ${graduation_year}`);
+                const sha256Hash = computeSHA256(dummyBuffer);
+                const { cid } = await uploadToIPFS(dummyBuffer, `${certificateId}.txt`);
+
+                await fabricGateway.issueCertificate({
+                    certificateID: certificateId,
+                    studentName: full_name,
+                    studentID: student_id,
+                    department,
+                    cgpa,
+                    graduationYear: parseInt(graduation_year),
+                    sha256Hash,
+                    ipfsCID: cid,
+                });
+
+                const { qrBase64 } = await generateQRCode(certificateId);
+                await Certificate.create({
+                    certificate_id: certificateId,
+                    student_id,
+                    full_name,
+                    department,
+                    cgpa,
+                    graduation_year: String(graduation_year),
+                    sha256_hash: sha256Hash,
+                    ipfs_cid: cid,
+                    issue_date: new Date(),
+                    issuer_id: req.user.id,
+                    status: 'Active',
+                    qr_code_data: qrBase64,
+                    institution_id: req.user.institution_id,
+                });
+
+                await VerificationLog.create({
+                    certificate_id: certificateId,
+                    verification_method: 'CertificateID',
+                    result: 'Valid',
+                    actor: req.user.username,
+                    details: `Certificate batch-issued by ${req.user.username}`,
+                });
+
+                // Send email notification if student has registered with email
+                const { User } = require('../database');
+                const studentUser = await User.findOne({ where: { student_id } });
+                if (studentUser && studentUser.email) {
+                    const verificationURL = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify/${certificateId}`;
+                    sendEmail(certificateIssuedEmail({
+                        fullName: full_name,
+                        certificateID: certificateId,
+                        studentID: student_id,
+                        department,
+                        graduationYear: graduation_year,
+                        verificationURL,
+                    }));
+                }
+
+                results.success.push({ row: rowNum, certificate_id: certificateId, student_id, full_name });
+                logger.info(`Batch-issued: ${certificateId} for ${full_name}`);
+            } catch (err) {
+                results.errors.push({ row: rowNum, message: err.message, data: row });
+                logger.error(`Batch row ${rowNum} failed: ${err.message}`);
+            }
+        }
+
+        const statusCode = results.errors.length === 0 ? 201 : results.success.length > 0 ? 207 : 400;
+        res.status(statusCode).json({
+            message: `Issued ${results.success.length} of ${records.length} certificates.`,
+            results,
+        });
+    })
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/certificates/issue
@@ -125,6 +252,23 @@ router.post('/issue',
             actor:               req.user.username,
             details:             `Certificate issued by ${req.user.username}`,
         });
+
+        // Step 7 — Send email notification if student registered
+        try {
+            const { User } = require('../database');
+            const studentUser = await User.findOne({ where: { student_id } });
+            if (studentUser && studentUser.email) {
+                const verificationURL = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify/${certificate_id}`;
+                sendEmail(certificateIssuedEmail({
+                    fullName: full_name,
+                    certificateID: certificate_id,
+                    studentID: student_id,
+                    department,
+                    graduationYear: graduation_year,
+                    verificationURL,
+                }));
+            }
+        } catch (_) { /* email failure does not block issuance */ }
 
         logger.info(`Certificate issued: ${certificate_id} by ${req.user.username}`);
 
@@ -332,10 +476,9 @@ router.get('/search',
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/certificates/:id/qr
-// Auth: any logged-in user
+// Public — QR codes are public by nature
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/qr',
-    verifyToken,
     asyncHandler(async (req, res) => {
         const cert = await Certificate.findByPk(req.params.id);
 

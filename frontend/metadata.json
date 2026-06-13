@@ -1,0 +1,6 @@
+{
+  "name": "Academic Certificate Verification System",
+  "description": "A blockchain-based secure academic certificate verification system for issuing, revoking, and verifying student graduation credentials.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

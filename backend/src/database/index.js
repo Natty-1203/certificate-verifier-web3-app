@@ -13,8 +13,8 @@ async function initDatabase() {
         await sequelize.authenticate();
         logger.info('Database connection established');
 
-        // force: false → only creates tables if they don't exist
-        await sequelize.sync({ force: false });
+        // alter: true → adds missing columns to existing tables without dropping data
+        await sequelize.sync({ alter: true });
         logger.info('Database tables synchronized');
 
         // Seed default admin user if none exists

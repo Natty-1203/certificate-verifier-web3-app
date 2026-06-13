@@ -18,12 +18,22 @@ const recoveryRoutes     = require('./routes/recovery');
 const usersRoutes        = require('./routes/users');
 const dashboardRoutes    = require('./routes/dashboard');
 const auditLogsRoutes    = require('./routes/auditLogs');
+const publicRoutes       = require('./routes/public');
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // ── Global middleware ─────────────────────────────────────────────────────────
-app.use(cors());
+app.use(cors({
+    origin: [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://127.0.0.1:3000',
+    ],
+    methods:      ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials:  true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -50,6 +60,7 @@ app.use('/api/recovery',       recoveryRoutes);
 app.use('/api/users',          usersRoutes);
 app.use('/api/dashboard',      dashboardRoutes);
 app.use('/api/audit-logs',     auditLogsRoutes);
+app.use('/api/public',         publicRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((_req, res) => {

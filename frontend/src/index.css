@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-primary: #1a2b4b;
+  --color-[#1a2b4b]: #1a2b4b;
+  --color-primary-dark: #111c32;
+  --color-primary-light: #283e66;
+}
+
+/* Elegant fade-in entrance animations for route layouts */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.35s ease-out forwards;
+}
+
+/* Ensure text inputs, select boxes, and textareas have dark backgrounds, white text, and clean borders in dark mode */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not(:disabled),
+.dark select,
+.dark textarea {
+  background-color: #0d1527 !important; /* deep slate-900 bg for high contrast */
+  color: #ffffff !important;            /* white text */
+  border-color: #334155 !important;      /* slate-700 border */
+}
+
+/* Accent border focus on inputs in dark mode */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not(:disabled):focus,
+.dark select:focus,
+.dark textarea:focus {
+  border-color: #3b82f6 !important;      /* blue-500 border on focus */
+  outline: 2px solid transparent !important;
+  outline-offset: 2px !important;
+}
+
+/* Ensure placeholder text is distinct and highly legible in dark mode */
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #94a3b8 !important; /* light slate-400 placeholder */
+  opacity: 1 !important;     /* override native browser opacity reduction */
+}
+
