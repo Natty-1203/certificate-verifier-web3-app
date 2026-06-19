@@ -1,7 +1,8 @@
-import { User, Certificate, AuditLog, VerificationResult, DashboardStats, Role } from '../types';
+import { User, Certificate, AuditLog, VerificationResult, DashboardStats, Role, Ticket, TicketMessage } from '../types';
 
 export interface IApiClient {
   login(username: string, password_raw: string): Promise<{ token: string; user: User }>;
+  studentLogin(fullName: string, email: string): Promise<{ token: string; user: User }>;
   logout(): Promise<void>;
   
   verifyCertificateById(certificateId: string): Promise<VerificationResult>;
@@ -13,6 +14,7 @@ export interface IApiClient {
     department: string;
     cgpa: number;
     graduation_year: string;
+    email?: string;
     pdf_file_name?: string;
     pdf_file_hash?: string;
     file?: File;
@@ -39,13 +41,19 @@ export interface IApiClient {
 
   getPublicStats(): Promise<{ totalIssued: number; totalRevoked: number }>;
 
-  register(data: { username: string; password: string; email: string; student_id: string; full_name?: string }): Promise<void>;
-
-  linkStudentId(student_id: string): Promise<void>;
-
   batchIssueCsv(file: File): Promise<{ message: string; results: { success: any[]; errors: any[] } }>;
 
+  importStudentsCsv(file: File): Promise<{ message: string; results: { imported: number; skipped: number; errors: any[] } }>;
+
   publicVerify(data: { certificateId?: string; studentId?: string; hash?: string }): Promise<any>;
+
+  getTickets(): Promise<Ticket[]>;
+  createTicket(studentId: string, subject: string, message: string, certificateId?: string): Promise<Ticket>;
+  getTicketMessages(ticketId: string): Promise<TicketMessage[]>;
+  replyTicket(ticketId: string, message: string): Promise<TicketMessage>;
+  updateTicketStatus(ticketId: string, status: string): Promise<Ticket>;
+  assignTicket(ticketId: string, issuerId: string): Promise<Ticket>;
+  reissueCertificate(ticketId: string): Promise<any>;
 }
 
 export async function computeFileSHA256(file: File): Promise<string> {
@@ -77,6 +85,20 @@ class RealApiClient implements IApiClient {
       throw new Error(errorPayload.message || 'Authentication with backend server failed');
     }
     
+    const data = await response.json();
+    return { token: data.token, user: data.user };
+  }
+
+  async studentLogin(fullName: string, email: string) {
+    const response = await fetch('/api/auth/student-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ full_name: fullName, email })
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(errorPayload.message || 'Student login failed');
+    }
     const data = await response.json();
     return { token: data.token, user: data.user };
   }
@@ -113,6 +135,9 @@ class RealApiClient implements IApiClient {
       status: res.status === 'Revoked' ? 'Revoked' : 'Active',
       ipfs_cid: details.ipfsAddress,
       sha256_hash: details.hash,
+      issuer_id: details.issuerID || undefined,
+      issuer_msp: details.issuerMSP || undefined,
+      revoked_by: details.revokedBy || undefined,
     };
 
     return {
@@ -134,6 +159,7 @@ class RealApiClient implements IApiClient {
     department: string;
     cgpa: number;
     graduation_year: string;
+    email?: string;
     pdf_file_name?: string;
     pdf_file_hash?: string;
     file?: File;
@@ -150,6 +176,10 @@ class RealApiClient implements IApiClient {
     const calculatedId = `AASTU-${data.graduation_year}-${data.student_id.replace(/[^0-9]/g, '').slice(-4) || '0001'}`;
     formData.append('certificate_id', calculatedId);
     
+    if (data.email) {
+      formData.append('email', data.email);
+    }
+
     if (!data.file) {
       throw new Error('Certificate PDF file is required.');
     }
@@ -199,6 +229,17 @@ class RealApiClient implements IApiClient {
       const err = await response.json().catch(() => ({}));
       throw new Error(err.message || 'Administrative revocation request declined by backend');
     }
+  }
+
+  async getMyCertificate(): Promise<Certificate[]> {
+    const token = localStorage.getItem('aastu_blockchain_cur_token');
+    const res = await fetch('/api/certificates/my', {
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      }
+    });
+    if (!res.ok) return [];
+    return res.json();
   }
 
   async searchCertificates(filters: any): Promise<Certificate[]> {
@@ -300,34 +341,6 @@ class RealApiClient implements IApiClient {
     return res.json();
   }
 
-  async register(data: { username: string; password: string; email: string; student_id: string; full_name?: string }): Promise<void> {
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Registration failed.');
-    }
-  }
-
-  async linkStudentId(student_id: string): Promise<void> {
-    const token = localStorage.getItem('aastu_blockchain_cur_token');
-    const res = await fetch('/api/auth/link-student-id', {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ student_id }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Failed to link student ID.');
-    }
-  }
-
   async batchIssueCsv(file: File): Promise<{ message: string; results: { success: any[]; errors: any[] } }> {
     const token = localStorage.getItem('aastu_blockchain_cur_token');
     const formData = new FormData();
@@ -344,12 +357,97 @@ class RealApiClient implements IApiClient {
     return res.json();
   }
 
+  async importStudentsCsv(file: File): Promise<{ message: string; results: { imported: number; skipped: number; errors: any[] } }> {
+    const token = localStorage.getItem('aastu_blockchain_cur_token');
+    const formData = new FormData();
+    formData.append('csv', file);
+    const res = await fetch('/api/students/import', {
+      method: 'POST',
+      headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Student import failed.');
+    }
+    return res.json();
+  }
+
   async publicVerify(data: { certificateId?: string; studentId?: string; hash?: string }): Promise<any> {
     const res = await fetch('/api/public/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+    return res.json();
+  }
+
+  private authHeaders(): Record<string, string> {
+    const token = localStorage.getItem('aastu_blockchain_cur_token');
+    return token ? { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+  }
+
+  async getTickets(): Promise<Ticket[]> {
+    const res = await fetch('/api/requests', { headers: this.authHeaders() });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.requests || [];
+  }
+
+  async createTicket(studentId: string, subject: string, message: string, certificateId?: string): Promise<Ticket> {
+    const res = await fetch('/api/requests', {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: JSON.stringify({ student_id: studentId, subject, message, certificate_id: certificateId }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || 'Failed to create ticket'); }
+    const data = await res.json();
+    return data.request || data;
+  }
+
+  async getTicketMessages(ticketId: string): Promise<TicketMessage[]> {
+    const res = await fetch(`/api/requests/${ticketId}`, { headers: this.authHeaders() });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.messages || [];
+  }
+
+  async replyTicket(ticketId: string, message: string): Promise<TicketMessage> {
+    const res = await fetch(`/api/requests/${ticketId}/messages`, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: JSON.stringify({ message }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || 'Failed to reply'); }
+    return res.json();
+  }
+
+  async updateTicketStatus(ticketId: string, status: string): Promise<Ticket> {
+    const res = await fetch(`/api/requests/${ticketId}/status`, {
+      method: 'PATCH',
+      headers: this.authHeaders(),
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || 'Failed to update status'); }
+    return res.json();
+  }
+
+  async assignTicket(ticketId: string, issuerId: string): Promise<Ticket> {
+    const res = await fetch(`/api/requests/${ticketId}/assign`, {
+      method: 'PATCH',
+      headers: this.authHeaders(),
+      body: JSON.stringify({ issuer_id: issuerId }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || 'Failed to assign'); }
+    return res.json();
+  }
+
+  async reissueCertificate(ticketId: string): Promise<any> {
+    const res = await fetch(`/api/requests/${ticketId}/reissue`, {
+      method: 'POST',
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || 'Re-issuance failed'); }
     return res.json();
   }
 }

@@ -33,6 +33,7 @@ async function verifyToken(req, res, next) {
             username:       decoded.username,
             role:           decoded.role,
             institution_id: decoded.institution_id,
+            student_id:     decoded.student_id || null,
         };
 
         next();

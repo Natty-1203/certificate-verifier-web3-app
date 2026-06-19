@@ -4,6 +4,9 @@ const sequelize       = require('./db');
 const User            = require('./models/User');
 const Certificate     = require('./models/Certificate');
 const VerificationLog = require('./models/VerificationLog');
+const Student         = require('./models/Student');
+const Request          = require('./models/Request');
+const RequestMessage   = require('./models/RequestMessage');
 const bcrypt          = require('bcryptjs');
 const logger          = require('../utils/logger');
 
@@ -49,5 +52,8 @@ module.exports = {
     User,
     Certificate,
     VerificationLog,
+    Student,
+    Request,
+    RequestMessage,
     initDatabase,
 };

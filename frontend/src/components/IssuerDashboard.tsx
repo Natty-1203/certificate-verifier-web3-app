@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api, computeFileSHA256 } from '../services/api';
-import { Certificate, DashboardStats, User } from '../types';
+import { Certificate, DashboardStats, User, Ticket, TicketMessage } from '../types';
 import { DEPARTMENTS, getGraduationYears } from '../constants';
 import { 
   FilePlus, 
@@ -19,7 +19,11 @@ import {
   Grid,
   ChevronLeft,
   ChevronRight,
-  RefreshCw
+  RefreshCw,
+  Mail,
+  RotateCcw,
+  MessageSquare,
+  Send
 } from 'lucide-react';
 
 interface IssuerDashboardProps {
@@ -28,7 +32,7 @@ interface IssuerDashboardProps {
 
 export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [activeTab, setActiveTab] = useState<'stats' | 'issue' | 'batch' | 'registry'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'issue' | 'batch' | 'registry' | 'reissue'>('stats');
 
   // Issue Certificate Form State
   const [fullName, setFullName] = useState('');
@@ -36,6 +40,7 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
   const [department, setDepartment] = useState('Electrical and Computer Engineering');
   const [cgpa, setCgpa] = useState('');
   const [gradYear, setGradYear] = useState(String(new Date().getFullYear()));
+  const [email, setEmail] = useState('');
 
   // PDF File block in Form
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
@@ -65,6 +70,54 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
 
   const gradYears = getGraduationYears();
 
+  // Re-issuance tasks
+  const [reissueTickets, setReissueTickets] = useState<Ticket[]>([]);
+  const [selectedReissueTicket, setSelectedReissueTicket] = useState<Ticket | null>(null);
+  const [reissueMsgs, setReissueMsgs] = useState<TicketMessage[]>([]);
+  const [reissueReply, setReissueReply] = useState('');
+  const [reissueError, setReissueError] = useState('');
+  const [reissuingId, setReissuingId] = useState<string | null>(null);
+
+  const loadReissueTickets = async () => {
+    try {
+      const all = await api.getTickets();
+      setReissueTickets(all.filter(t => t.status === 'Approved' && t.assigned_to === currentUser.id));
+    } catch { /* ignore */ }
+  };
+
+  const handleSelectReissueTicket = async (t: Ticket) => {
+    setSelectedReissueTicket(t);
+    try { const msgs = await api.getTicketMessages(t.id); setReissueMsgs(msgs); } catch { setReissueMsgs([]); }
+    setReissueReply('');
+    setReissueError('');
+  };
+
+  const handleReissueReply = async () => {
+    if (!selectedReissueTicket || !reissueReply.trim()) return;
+    try {
+      await api.replyTicket(selectedReissueTicket.id, reissueReply.trim());
+      setReissueReply('');
+      const msgs = await api.getTicketMessages(selectedReissueTicket.id);
+      setReissueMsgs(msgs);
+    } catch (err: any) {
+      setReissueError(err.message || 'Failed to reply.');
+    }
+  };
+
+  const handleExecuteReissue = async (ticketId: string) => {
+    setReissuingId(ticketId);
+    setReissueError('');
+    try {
+      await api.reissueCertificate(ticketId);
+      await loadReissueTickets();
+      setSelectedReissueTicket(null);
+    } catch (err: any) {
+      setReissueError(err.message || 'Re-issuance failed.');
+    } finally {
+      setReissuingId(null);
+    }
+  };
+
   // Auto-Save load/save matching sessionStorage NFR-33 constraint
   useEffect(() => {
     const savedName = sessionStorage.getItem('issue_fullName') || '';
@@ -72,12 +125,14 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
     const savedDept = sessionStorage.getItem('issue_department') || 'Electrical and Computer Engineering';
     const savedCgpa = sessionStorage.getItem('issue_cgpa') || '';
     const savedYear = sessionStorage.getItem('issue_gradYear') || String(new Date().getFullYear());
+    const savedEmail = sessionStorage.getItem('issue_email') || '';
 
     if (savedName) setFullName(savedName);
     if (savedId) setStudentId(savedId);
     if (savedDept) setDepartment(savedDept);
     if (savedCgpa) setCgpa(savedCgpa);
     if (savedYear) setGradYear(savedYear);
+    if (savedEmail) setEmail(savedEmail);
   }, []);
 
   const updateFormState = (field: string, val: string) => {
@@ -87,6 +142,7 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
     if (field === 'department') setDepartment(val);
     if (field === 'cgpa') setCgpa(val);
     if (field === 'gradYear') setGradYear(val);
+    if (field === 'email') setEmail(val);
   };
 
   const clearFormSession = () => {
@@ -95,9 +151,11 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
     sessionStorage.removeItem('issue_department');
     sessionStorage.removeItem('issue_cgpa');
     sessionStorage.removeItem('issue_gradYear');
+    sessionStorage.removeItem('issue_email');
     setFullName('');
     setStudentId('');
     setCgpa('');
+    setEmail('');
     setAttachedFile(null);
     setAttachedFileHash('');
   };
@@ -116,6 +174,7 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
 
   useEffect(() => {
     loadData();
+    loadReissueTickets();
   }, []);
 
   // PDF processing with client-side SHA-256 calculation
@@ -166,6 +225,7 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
         department,
         cgpa: numericCgpa,
         graduation_year: gradYear,
+        email: email.trim() || undefined,
         pdf_file_name: attachedFile.name,
         pdf_file_hash: attachedFileHash,
         file: attachedFile
@@ -264,6 +324,14 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
             }`}
           >
             Registry
+          </button>
+          <button
+            onClick={() => setActiveTab('reissue')}
+            className={`px-3 py-1.5 rounded-lg transition-all ${
+              activeTab === 'reissue' ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm font-bold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <RotateCcw className="h-3.5 w-3.5 inline mr-1" />Re-issue
           </button>
         </div>
       </div>
@@ -445,6 +513,19 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
                 />
               </div>
 
+              <div>
+                <label className="block text-slate-500 dark:text-slate-400 font-mono font-bold uppercase mb-1">
+                  <Mail className="h-3 w-3 inline mr-1" />Student Email <span className="text-slate-400 font-normal normal-case">(optional — for notification)</span>
+                </label>
+                <input
+                  type="email"
+                  placeholder="student@aastu.edu.et"
+                  className="w-full text-xs py-2 px-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  value={email}
+                  onChange={(e) => updateFormState('email', e.target.value)}
+                />
+              </div>
+
               {/* Secure PDF upload (compiling hashing code) */}
               <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 bg-slate-50/50 dark:bg-slate-950/20">
                 <span className="block text-[11px] font-mono text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wide mb-2">
@@ -536,9 +617,9 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
                 <h4 className="font-bold text-slate-700 dark:text-slate-300 mb-2">CSV Format Requirements</h4>
                 <p className="text-slate-500 dark:text-slate-400 mb-2">Upload a CSV file with the following columns:</p>
                 <code className="block bg-white dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-400 font-mono">
-                  student_id,full_name,department,cgpa,graduation_year
+                  student_id,full_name,department,cgpa,graduation_year[,email]
                 </code>
-                <p className="text-slate-400 dark:text-slate-500 mt-2">Each student will receive a blockchain-issued certificate. Emails are sent automatically if students have registered.</p>
+                <p className="text-slate-400 dark:text-slate-500 mt-2">Each student will receive a blockchain-issued certificate. Add an optional <strong>email</strong> column to send notification directly.</p>
               </div>
 
               <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 bg-slate-50/50 dark:bg-slate-950/20">
@@ -761,6 +842,94 @@ export default function IssuerDashboard({ currentUser }: IssuerDashboardProps) {
 
           </div>
 
+        </div>
+      )}
+
+      {/* SUB-PANEL 5: RE-ISSUANCE TASKS */}
+      {activeTab === 'reissue' && (
+        <div className="space-y-6">
+          <h3 className="font-extrabold text-slate-900 dark:text-slate-100 flex items-center space-x-2 text-base">
+            <RotateCcw className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+            <span>Re-issuance Tasks</span>
+          </h3>
+
+          {reissueError && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300 text-xs font-semibold rounded-lg border border-red-100 dark:border-red-900/40">{reissueError}</div>
+          )}
+
+          {selectedReissueTicket ? (
+            /* Ticket Thread View */
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800">
+                <button onClick={() => { setSelectedReissueTicket(null); setReissueMsgs([]); }} className="text-blue-600 dark:text-blue-400 text-xs font-bold hover:underline cursor-pointer">&larr; Back</button>
+                <h4 className="font-bold text-slate-900 dark:text-slate-100 text-sm mt-1">{selectedReissueTicket.subject}</h4>
+                <p className="text-[10px] text-slate-400 font-mono mt-1">Student: {selectedReissueTicket.student_name} &middot; Certificate: {selectedReissueTicket.certificate_id || 'N/A'}</p>
+              </div>
+
+              {/* Messages */}
+              <div className="p-4 space-y-3 max-h-72 overflow-y-auto">
+                {reissueMsgs.map(msg => (
+                  <div key={msg.id} className={`p-3 rounded-lg border text-xs ${
+                    msg.sender_role === 'Student' ? 'bg-blue-50 dark:bg-blue-950/20 border-blue-100 dark:border-blue-900/30' : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-700 ml-6'
+                  }`}>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold text-slate-700 dark:text-slate-300">{msg.sender_name} <span className="text-slate-400 font-normal">({msg.sender_role})</span></span>
+                      <span className="text-slate-400 text-[10px]">{new Date(msg.created_at).toLocaleString()}</span>
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{msg.message}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Reply + Execute Re-issue */}
+              <div className="p-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                <div className="flex space-x-2">
+                  <textarea rows={2} placeholder="Add a note..." className="flex-1 text-xs py-2 px-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500" value={reissueReply} onChange={e => setReissueReply(e.target.value)} />
+                  <button onClick={handleReissueReply} disabled={!reissueReply.trim()} className="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-lg cursor-pointer"><Send className="h-3.5 w-3.5" /></button>
+                </div>
+                <button
+                  onClick={() => handleExecuteReissue(selectedReissueTicket.id)}
+                  disabled={reissuingId === selectedReissueTicket.id}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-extrabold uppercase text-xs rounded-lg cursor-pointer flex items-center justify-center"
+                >
+                  {reissuingId === selectedReissueTicket.id ? 'Re-issuing...' : 'Execute Re-issuance'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* Ticket List - Approved only */
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-sans">
+                  <thead>
+                    <tr className="text-slate-400 dark:text-slate-500 font-mono border-b border-slate-100 dark:border-slate-800 uppercase tracking-widest text-[9px] font-bold">
+                      <th className="p-3">Subject</th>
+                      <th className="p-3">Student</th>
+                      <th className="p-3">Certificate ID</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {reissueTickets.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/50">
+                        <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">{t.subject}</td>
+                        <td className="p-3 text-slate-600 dark:text-slate-400">{t.student_name}</td>
+                        <td className="p-3 text-slate-500 dark:text-slate-400 font-mono">{t.certificate_id || '—'}</td>
+                        <td className="p-3">
+                          <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/40">{t.status}</span>
+                        </td>
+                        <td className="p-3 text-right">
+                          <button onClick={() => handleSelectReissueTicket(t)} className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold rounded cursor-pointer">View & Re-issue</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {reissueTickets.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-slate-400 font-mono">No approved re-issuance tasks available.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

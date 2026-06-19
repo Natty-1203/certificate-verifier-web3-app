@@ -59,9 +59,10 @@ export default function Header({ currentUser, onLogout, currentView, setView, is
           
           {/* Logo & Institution Brand: Navy background brand icon, custom typographic pairings */}
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setView('public')}>
-            <div className="w-8 h-8 md:w-10 md:h-10 bg-primary dark:bg-blue-600 rounded flex items-center justify-center text-white font-extrabold text-lg md:text-xl shadow-md shadow-primary/10">
-              A
-            </div>
+           
+            <div className="w-8 h-8 md:w-10 md:h-10 shadow-md shadow-primary/10">
+              <img src="/logos/logo.png" alt="AASTU SecureCert" />
+              </div>
             <div>
               <h1 className="font-black text-lg leading-tight tracking-tight text-primary dark:text-white md:text-xl uppercase">
                 AASTU <span className="text-slate-400 dark:text-slate-500 font-normal">| SECURECERT</span>

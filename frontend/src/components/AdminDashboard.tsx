@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import { User, Certificate, AuditLog, DashboardStats, Role } from '../types';
+import { User, Certificate, AuditLog, DashboardStats, Role, Ticket, TicketMessage } from '../types';
 import { DEPARTMENTS, getGraduationYears } from '../constants';
 import { 
   Users, 
@@ -21,7 +21,11 @@ import {
   Clock,
   ExternalLink,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Upload,
+  MessageSquare,
+  UserCog,
+  Send
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -30,7 +34,7 @@ interface AdminDashboardProps {
 
 export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [activeSubTab, setActiveSubTab] = useState<'stats' | 'users' | 'certificates' | 'audit'>('stats');
+  const [activeSubTab, setActiveSubTab] = useState<'stats' | 'users' | 'certificates' | 'audit' | 'students' | 'tickets'>('stats');
   
   // User Management
   const [users, setUsers] = useState<User[]>([]);
@@ -54,12 +58,81 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
   const [revokeReason, setRevokeReason] = useState('');
   const [revokeError, setRevokeError] = useState('');
 
+  // Student roster import
+  const [studentCsvFile, setStudentCsvFile] = useState<File | null>(null);
+  const [importingStudents, setImportingStudents] = useState(false);
+  const [studentImportResult, setStudentImportResult] = useState<{ message: string; results: { imported: number; skipped: number; errors: any[] } } | null>(null);
+  const [studentImportError, setStudentImportError] = useState('');
+
   // Audit activities
   const [logs, setLogs] = useState<AuditLog[]>([]);
+
+  // Ticket management
+  const [allTickets, setAllTickets] = useState<Ticket[]>([]);
+  const [selectedTicketAdmin, setSelectedTicketAdmin] = useState<Ticket | null>(null);
+  const [ticketMsgsAdmin, setTicketMsgsAdmin] = useState<TicketMessage[]>([]);
+  const [adminReply, setAdminReply] = useState('');
+  const [adminTicketError, setAdminTicketError] = useState('');
+  const [assignIssuerId, setAssignIssuerId] = useState('');
+  const [assigningTicketId, setAssigningTicketId] = useState<string | null>(null);
 
   // Page index state
   const [certPage, setCertPage] = useState(1);
   const pageSize = 5; // Max rows
+
+  const loadTickets = async () => {
+    try { const t = await api.getTickets(); setAllTickets(t); } catch { /* ignore */ }
+  };
+
+  const loadTicketMsgsAdmin = async (ticketId: string) => {
+    try { const msgs = await api.getTicketMessages(ticketId); setTicketMsgsAdmin(msgs); } catch { setTicketMsgsAdmin([]); }
+  };
+
+  const handleSelectTicketAdmin = async (t: Ticket) => {
+    setSelectedTicketAdmin(t);
+    setAssignIssuerId(t.assigned_to || '');
+    await loadTicketMsgsAdmin(t.id);
+    setAdminReply('');
+    setAdminTicketError('');
+  };
+
+  const handleAdminTicketReply = async () => {
+    if (!selectedTicketAdmin || !adminReply.trim()) return;
+    try {
+      await api.replyTicket(selectedTicketAdmin.id, adminReply.trim());
+      setAdminReply('');
+      await loadTicketMsgsAdmin(selectedTicketAdmin.id);
+      await loadTickets();
+    } catch (err: any) {
+      setAdminTicketError(err.message || 'Failed to reply.');
+    }
+  };
+
+  const handleAdminTicketStatus = async (ticketId: string, status: string) => {
+    try {
+      await api.updateTicketStatus(ticketId, status);
+      await loadTickets();
+      if (selectedTicketAdmin?.id === ticketId) {
+        setSelectedTicketAdmin(prev => prev ? { ...prev, status: status as any } : null);
+      }
+    } catch (err: any) {
+      setAdminTicketError(err.message || 'Failed to update status.');
+    }
+  };
+
+  const handleAssignTicket = async (ticketId: string) => {
+    if (!assignIssuerId.trim()) { setAdminTicketError('Select an issuer.'); return; }
+    setAssigningTicketId(ticketId);
+    try {
+      await api.assignTicket(ticketId, assignIssuerId.trim());
+      await loadTickets();
+      if (selectedTicketAdmin?.id === ticketId) setSelectedTicketAdmin(prev => prev ? { ...prev, assigned_to: assignIssuerId.trim() } : null);
+    } catch (err: any) {
+      setAdminTicketError(err.message || 'Failed to assign.');
+    } finally {
+      setAssigningTicketId(null);
+    }
+  };
 
   // Load baseline statistics and elements
   const loadData = async () => {
@@ -82,9 +155,11 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
 
   useEffect(() => {
     loadData();
+    loadTickets();
     // Auto refresh every 60 seconds (FR-63 Compliance)
     const timer = setInterval(() => {
       loadData();
+      loadTickets();
     }, 60000);
     return () => clearInterval(timer);
   }, []);
@@ -230,6 +305,22 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
             }`}
           >
             Logs
+          </button>
+          <button
+            onClick={() => setActiveSubTab('students')}
+            className={`px-3 py-2 rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+              activeSubTab === 'students' ? 'bg-white dark:bg-slate-900 text-slate-950 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            Students
+          </button>
+          <button
+            onClick={() => setActiveSubTab('tickets')}
+            className={`px-3 py-2 rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+              activeSubTab === 'tickets' ? 'bg-white dark:bg-slate-900 text-slate-950 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            Requests
           </button>
         </div>
       </div>
@@ -674,6 +765,224 @@ export default function AdminDashboard({ currentUser }: AdminDashboardProps) {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* SUB-PANEL 5: STUDENT ROSTER IMPORT */}
+      {activeSubTab === 'students' && (
+        <div className="max-w-3xl mx-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/60 dark:border-slate-800 p-6 shadow-sm transition-colors">
+            <h3 className="font-extrabold text-slate-900 dark:text-slate-100 tracking-tight flex items-center space-x-2 text-base pb-3 border-b border-slate-100 dark:border-slate-800 mb-5">
+              <Upload className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+              <span>Import Student Roster</span>
+            </h3>
+
+            <div className="space-y-4 text-xs">
+              <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-lg border border-slate-200 dark:border-slate-800">
+                <h4 className="font-bold text-slate-700 dark:text-slate-300 mb-2">CSV Format Requirements</h4>
+                <p className="text-slate-500 dark:text-slate-400 mb-2">Upload a CSV file exported from the university student information system with the following columns:</p>
+                <code className="block bg-white dark:bg-slate-900 p-2 rounded border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-400 font-mono">
+                  student_id,full_name,email,department,graduation_year
+                </code>
+                <p className="text-slate-400 dark:text-slate-500 mt-2">
+                  Existing records are updated. Missing fields will be rejected. All columns are required.
+                </p>
+              </div>
+
+              {studentImportError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300 text-xs font-semibold rounded-lg border border-red-100 dark:border-red-900/40 flex items-center space-x-1.5">
+                  <X className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
+                  <span>{studentImportError}</span>
+                </div>
+              )}
+
+              {studentImportResult && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-lg border border-emerald-100 dark:border-emerald-900/40">
+                  {studentImportResult.message}
+                  {studentImportResult.results.errors.length > 0 && (
+                    <div className="mt-2 bg-red-50 dark:bg-red-950/20 p-2 rounded max-h-24 overflow-y-auto">
+                      {studentImportResult.results.errors.map((e: any, i: number) => (
+                        <div key={i} className="text-[11px] font-mono text-red-700 dark:text-red-400 py-0.5">Row {e.row}: {e.message}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 bg-slate-50/50 dark:bg-slate-950/20">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="px-4 py-2 bg-slate-900 border border-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer">
+                    Choose CSV File
+                    <input
+                      type="file"
+                      accept=".csv"
+                      className="hidden"
+                      onChange={(e) => { setStudentCsvFile(e.target.files?.[0] || null); setStudentImportResult(null); setStudentImportError(''); }}
+                    />
+                  </label>
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {studentCsvFile ? studentCsvFile.name : 'No file selected'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  disabled={!studentCsvFile || importingStudents}
+                  onClick={async () => {
+                    if (!studentCsvFile) return;
+                    setImportingStudents(true);
+                    setStudentImportError('');
+                    setStudentImportResult(null);
+                    try {
+                      const result = await api.importStudentsCsv(studentCsvFile);
+                      setStudentImportResult(result);
+                      setStudentCsvFile(null);
+                    } catch (err: any) {
+                      setStudentImportError(err.message || 'Import failed.');
+                    } finally {
+                      setImportingStudents(false);
+                    }
+                  }}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-extrabold uppercase rounded-lg cursor-pointer inline-flex items-center justify-center space-x-1"
+                >
+                  {importingStudents ? <span>Importing...</span> : <span>Upload & Import</span>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-PANEL 6: TICKET MANAGEMENT */}
+      {activeSubTab === 'tickets' && (
+        <div className="space-y-6">
+          <h3 className="font-extrabold text-slate-900 dark:text-slate-100 flex items-center space-x-2 text-base">
+            <MessageSquare className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+            <span>Support Requests</span>
+          </h3>
+
+          {adminTicketError && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300 text-xs font-semibold rounded-lg border border-red-100 dark:border-red-900/40">{adminTicketError}</div>
+          )}
+
+          {selectedTicketAdmin ? (
+            /* Ticket Detail / Thread View */
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800">
+                <button onClick={() => { setSelectedTicketAdmin(null); setTicketMsgsAdmin([]); }} className="text-blue-600 dark:text-blue-400 text-xs font-bold hover:underline cursor-pointer">&larr; Back to list</button>
+                <h4 className="font-bold text-slate-900 dark:text-slate-100 text-sm mt-1">{selectedTicketAdmin.subject}</h4>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                    selectedTicketAdmin.status === 'Open' ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 border border-blue-100' :
+                    selectedTicketAdmin.status === 'InReview' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-100' :
+                    selectedTicketAdmin.status === 'Approved' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-100' :
+                    selectedTicketAdmin.status === 'Rejected' ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-100' :
+                    'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}>{selectedTicketAdmin.status}</span>
+                  <span className="text-slate-400 text-[10px] font-mono">Student: {selectedTicketAdmin.student_name} ({selectedTicketAdmin.student_id})</span>
+                </div>
+              </div>
+
+              {/* Status / Assignment Actions */}
+              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 flex flex-wrap gap-2 items-center">
+                {selectedTicketAdmin.status === 'Open' && (
+                  <button onClick={() => handleAdminTicketStatus(selectedTicketAdmin.id, 'InReview')} className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-bold rounded cursor-pointer">Mark In Review</button>
+                )}
+                {selectedTicketAdmin.status === 'InReview' && (
+                  <>
+                    <button onClick={() => handleAdminTicketStatus(selectedTicketAdmin.id, 'Approved')} className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded cursor-pointer">Approve</button>
+                    <button onClick={() => handleAdminTicketStatus(selectedTicketAdmin.id, 'Rejected')} className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold rounded cursor-pointer">Reject</button>
+                  </>
+                )}
+
+                <div className="ml-auto flex items-center space-x-2">
+                  <select
+                    className="text-[10px] py-1 px-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-700 dark:text-slate-300"
+                    value={assignIssuerId}
+                    onChange={e => setAssignIssuerId(e.target.value)}
+                  >
+                    <option value="">Assign to issuer...</option>
+                    {users.filter(u => u.role === 'Issuer' && u.is_active).map(u => (
+                      <option key={u.id} value={u.id}>{u.username}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => handleAssignTicket(selectedTicketAdmin.id)}
+                    disabled={assigningTicketId === selectedTicketAdmin.id || !assignIssuerId}
+                    className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-[10px] font-bold rounded cursor-pointer flex items-center"
+                  >
+                    <UserCog className="h-3 w-3 mr-1" />Assign
+                  </button>
+                </div>
+              </div>
+
+              {/* Messages */}
+              <div className="p-4 space-y-3 max-h-80 overflow-y-auto">
+                {ticketMsgsAdmin.map(msg => (
+                  <div key={msg.id} className={`p-3 rounded-lg border text-xs ${
+                    msg.sender_role === 'Student' ? 'bg-blue-50 dark:bg-blue-950/20 border-blue-100 dark:border-blue-900/30' : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-700 ml-6'
+                  }`}>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold text-slate-700 dark:text-slate-300">{msg.sender_name} <span className="text-slate-400 font-normal">({msg.sender_role})</span></span>
+                      <span className="text-slate-400 text-[10px]">{new Date(msg.created_at).toLocaleString()}</span>
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-400 whitespace-pre-wrap">{msg.message}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Reply */}
+              {selectedTicketAdmin.status !== 'Resolved' && (
+                <div className="p-4 border-t border-slate-100 dark:border-slate-800 flex space-x-2">
+                  <textarea rows={2} placeholder="Type reply..." className="flex-1 text-xs py-2 px-3 bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500" value={adminReply} onChange={e => setAdminReply(e.target.value)} />
+                  <button onClick={handleAdminTicketReply} disabled={!adminReply.trim()} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-bold text-xs rounded-lg flex items-center cursor-pointer"><Send className="h-3.5 w-3.5" /></button>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Ticket List */
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-sans">
+                  <thead>
+                    <tr className="text-slate-400 dark:text-slate-500 font-mono border-b border-slate-100 dark:border-slate-800 uppercase tracking-widest text-[9px] font-bold">
+                      <th className="p-3">Subject</th>
+                      <th className="p-3">Student</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3">Assigned To</th>
+                      <th className="p-3">Created</th>
+                      <th className="p-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {allTickets.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-850/50">
+                        <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">{t.subject}</td>
+                        <td className="p-3 text-slate-600 dark:text-slate-400">{t.student_name}</td>
+                        <td className="p-3">
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                            t.status === 'Open' ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 border border-blue-100' :
+                            t.status === 'InReview' ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-100' :
+                            t.status === 'Approved' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-100' :
+                            t.status === 'Rejected' ? 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-100' :
+                            'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                          }`}>{t.status}</span>
+                        </td>
+                        <td className="p-3 text-slate-500 dark:text-slate-400">{t.assigned_to ? users.find(u => u.id === t.assigned_to)?.username || t.assigned_to : '—'}</td>
+                        <td className="p-3 text-slate-500 dark:text-slate-400">{new Date(t.created_at).toLocaleDateString()}</td>
+                        <td className="p-3 text-right">
+                          <button onClick={() => handleSelectTicketAdmin(t)} className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-bold rounded cursor-pointer">View</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {allTickets.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-400 font-mono">No requests found.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

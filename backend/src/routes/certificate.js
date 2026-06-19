@@ -9,7 +9,7 @@ const { requireRole }       = require('../middleware/roles');
 const fabricGateway         = require('../fabric/gateway');
 const { uploadToIPFS, computeSHA256 } = require('../utils/ipfs');
 const { generateQRCode }    = require('../utils/qrGenerator');
-const { Certificate, VerificationLog } = require('../database');
+const { Certificate, VerificationLog, Student } = require('../database');
 const { sendEmail, certificateIssuedEmail } = require('../utils/email');
 const { Op }                = require('sequelize');
 const logger                = require('../utils/logger');
@@ -44,6 +44,9 @@ function formatCertificate(cert) {
         status:          cert.status         || (cert.isRevoked ? 'Revoked' : 'Active'),
         revocationDate:  cert.revocation_date   || cert.revokedAt   || null,
         revocationReason: cert.revocation_reason || cert.revocationReason || null,
+        issuerID:        cert.issuerID       || cert.issuer_id     || null,
+        issuerMSP:       cert.issuerMSP      || null,
+        revokedBy:       cert.revokedBy      || null,
     };
 }
 
@@ -54,7 +57,7 @@ function formatCertificate(cert) {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/batch-issue',
     verifyToken,
-    requireRole(['Admin', 'Issuer']),
+    requireRole('Issuer'),
     upload.single('csv'),
     asyncHandler(async (req, res) => {
         if (!req.file) {
@@ -89,18 +92,37 @@ router.post('/batch-issue',
                 const department = row.department || '';
                 const cgpa = parseFloat(row.cgpa || row.CGPA || '0');
                 const graduation_year = row.graduation_year || row.graduationYear || '';
+                const email = row.email || '';
 
                 if (!student_id || !full_name || !department || !cgpa || !graduation_year) {
                     results.errors.push({ row: rowNum, message: 'Missing required fields', data: row });
                     continue;
                 }
 
-                if (isNaN(cgpa) || cgpa < 2.0 || cgpa > 4.0) {
-                    results.errors.push({ row: rowNum, message: 'Invalid CGPA (must be 2.0-4.0)', data: row });
+                if (isNaN(cgpa) || cgpa < 0.0 || cgpa > 4.0) {
+                    results.errors.push({ row: rowNum, message: 'Invalid CGPA (must be 0.0-4.0)', data: row });
+                    continue;
+                }
+
+                // Validate student exists in university roster
+                const rosterEntry = await Student.findByPk(student_id);
+                if (!rosterEntry) {
+                    results.errors.push({ row: rowNum, message: `Student ID "${student_id}" not found in university roster.`, data: row });
+                    continue;
+                }
+                if (rosterEntry.full_name.toLowerCase() !== full_name.toLowerCase()) {
+                    results.errors.push({ row: rowNum, message: `Name "${full_name}" does not match university record "${rosterEntry.full_name}".`, data: row });
                     continue;
                 }
 
                 const certificateId = `AASTU-${graduation_year}-${student_id.replace(/[^0-9]/g, '').slice(-4) || String(i + 1).padStart(4, '0')}`;
+
+                // Check certificate_id doesn't already exist
+                const existing = await Certificate.findByPk(certificateId);
+                if (existing) {
+                    results.errors.push({ row: rowNum, message: `Certificate ID "${certificateId}" already exists.`, data: row });
+                    continue;
+                }
                 const dummyBuffer = Buffer.from(`AASTU Certificate: ${certificateId}\nStudent: ${full_name}\nStudent ID: ${student_id}\nDepartment: ${department}\nCGPA: ${cgpa}\nYear: ${graduation_year}`);
                 const sha256Hash = computeSHA256(dummyBuffer);
                 const { cid } = await uploadToIPFS(dummyBuffer, `${certificateId}.txt`);
@@ -141,19 +163,30 @@ router.post('/batch-issue',
                     details: `Certificate batch-issued by ${req.user.username}`,
                 });
 
-                // Send email notification if student has registered with email
-                const { User } = require('../database');
-                const studentUser = await User.findOne({ where: { student_id } });
-                if (studentUser && studentUser.email) {
+                // Send email notification if student registered or email provided
+                let recipientEmail = null;
+                if (email) {
+                    recipientEmail = email;
+                } else {
+                    const { User } = require('../database');
+                    const studentUser = await User.findOne({ where: { student_id } });
+                    if (studentUser && studentUser.email) {
+                        recipientEmail = studentUser.email;
+                    }
+                }
+                if (recipientEmail) {
                     const verificationURL = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify/${certificateId}`;
-                    sendEmail(certificateIssuedEmail({
-                        fullName: full_name,
-                        certificateID: certificateId,
-                        studentID: student_id,
-                        department,
-                        graduationYear: graduation_year,
-                        verificationURL,
-                    }));
+                    sendEmail({
+                        to: recipientEmail,
+                        ...certificateIssuedEmail({
+                            fullName: full_name,
+                            certificateID: certificateId,
+                            studentID: student_id,
+                            department,
+                            graduationYear: graduation_year,
+                            verificationURL,
+                        }),
+                    });
                 }
 
                 results.success.push({ row: rowNum, certificate_id: certificateId, student_id, full_name });
@@ -178,7 +211,7 @@ router.post('/batch-issue',
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/issue',
     verifyToken,
-    requireRole(['Admin', 'Issuer']),
+    requireRole('Issuer'),
     upload.single('file'),
     asyncHandler(async (req, res) => {
 
@@ -195,11 +228,41 @@ router.post('/issue',
             cgpa,
             graduation_year,
             certificate_id,
+            email,
         } = req.body;
 
         if (!student_id || !full_name || !department || !cgpa || !graduation_year || !certificate_id) {
             return res.status(400).json({
                 message: 'All fields are required: student_id, full_name, department, cgpa, graduation_year, certificate_id'
+            });
+        }
+
+        // Validate student exists in university roster
+        const rosterEntry = await Student.findByPk(student_id);
+        if (!rosterEntry) {
+            return res.status(400).json({
+                message: `Student ID "${student_id}" not found in university roster. Import student data first or verify the ID is correct.`
+            });
+        }
+        if (rosterEntry.full_name.toLowerCase() !== full_name.toLowerCase()) {
+            return res.status(400).json({
+                message: `Name "${full_name}" does not match university record "${rosterEntry.full_name}" for student ID ${student_id}.`
+            });
+        }
+
+        // Validate CGPA range (must match chaincode constraint)
+        const cgpaNum = parseFloat(cgpa);
+        if (isNaN(cgpaNum) || cgpaNum < 0.0 || cgpaNum > 4.0) {
+            return res.status(400).json({
+                message: 'Invalid CGPA (must be 0.0-4.0).'
+            });
+        }
+
+        // Check certificate_id doesn't already exist
+        const existingCert = await Certificate.findByPk(certificate_id);
+        if (existingCert) {
+            return res.status(400).json({
+                message: `Certificate ID "${certificate_id}" already exists. Submit a re-issuance request instead.`
             });
         }
 
@@ -217,7 +280,7 @@ router.post('/issue',
             studentName:    full_name,
             studentID:      student_id,
             department,
-            cgpa:           parseFloat(cgpa),
+            cgpa:           cgpaNum,
             graduationYear: parseInt(graduation_year),
             sha256Hash,
             ipfsCID:        cid,
@@ -253,20 +316,31 @@ router.post('/issue',
             details:             `Certificate issued by ${req.user.username}`,
         });
 
-        // Step 7 — Send email notification if student registered
+        // Step 7 — Send email notification if student registered or email provided
         try {
-            const { User } = require('../database');
-            const studentUser = await User.findOne({ where: { student_id } });
-            if (studentUser && studentUser.email) {
+            let recipientEmail = null;
+            if (email) {
+                recipientEmail = email;
+            } else {
+                const { User } = require('../database');
+                const studentUser = await User.findOne({ where: { student_id } });
+                if (studentUser && studentUser.email) {
+                    recipientEmail = studentUser.email;
+                }
+            }
+            if (recipientEmail) {
                 const verificationURL = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify/${certificate_id}`;
-                sendEmail(certificateIssuedEmail({
-                    fullName: full_name,
-                    certificateID: certificate_id,
-                    studentID: student_id,
-                    department,
-                    graduationYear: graduation_year,
-                    verificationURL,
-                }));
+                sendEmail({
+                    to: recipientEmail,
+                    ...certificateIssuedEmail({
+                        fullName: full_name,
+                        certificateID: certificate_id,
+                        studentID: student_id,
+                        department,
+                        graduationYear: graduation_year,
+                        verificationURL,
+                    }),
+                });
             }
         } catch (_) { /* email failure does not block issuance */ }
 
@@ -411,6 +485,36 @@ router.post('/revoke',
             success: true,
             message: 'Academic degree certificate successfully disabled.',
         });
+    })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/certificates/my
+// Auth: Student — returns own certificates
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/my',
+    verifyToken,
+    requireRole('Student'),
+    asyncHandler(async (req, res) => {
+        const certs = await Certificate.findAll({
+            where: { student_id: req.user.student_id },
+            order: [['issue_date', 'DESC']],
+        });
+
+        res.status(200).json(
+            certs.map(cert => ({
+                certificate_id:  cert.certificate_id,
+                student_id:      cert.student_id,
+                full_name:       cert.full_name,
+                department:      cert.department,
+                cgpa:            parseFloat(cert.cgpa),
+                graduation_year: cert.graduation_year,
+                issue_date:      cert.issue_date,
+                status:          cert.status,
+                ipfs_cid:        cert.ipfs_cid,
+                sha256_hash:     cert.sha256_hash,
+            }))
+        );
     })
 );
 

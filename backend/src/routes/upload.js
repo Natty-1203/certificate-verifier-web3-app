@@ -3,6 +3,10 @@
 const { Router } = require('express');
 const multer     = require('multer');
 const { asyncHandler } = require('../middleware/errorHandler');
+const { verifyToken }  = require('../middleware/auth');
+const { requireRole }  = require('../middleware/roles');
+const { sendEmail, certificateIssuedEmail } = require('../utils/email');
+const { Student, Certificate } = require('../database');
 const fabricGateway    = require('../fabric/gateway');
 const {
     uploadToIPFS,
@@ -42,7 +46,11 @@ router.get('/health', asyncHandler(async (_req, res) => {
  *   3. Upload PDF to IPFS → get CID
  *   4. Store hash + CID + metadata on blockchain
  */
-router.post('/certificate', upload.single('pdf'), asyncHandler(async (req, res) => {
+router.post('/certificate',
+    verifyToken,
+    requireRole('Issuer'),
+    upload.single('pdf'),
+    asyncHandler(async (req, res) => {
     // ── Validate file was uploaded ────────────────────────────────────────────
     if (!req.file) {
         throw new Error('INVALID_INPUT — PDF file is required');
@@ -55,11 +63,41 @@ router.post('/certificate', upload.single('pdf'), asyncHandler(async (req, res) 
         department,
         cgpa,
         graduationYear,
+        email,
     } = req.body;
 
     if (!certificateID || !studentName || !studentID
         || !department || !cgpa || !graduationYear) {
         throw new Error('INVALID_INPUT — all metadata fields are required');
+    }
+
+    // Validate student exists in university roster
+    const rosterEntry = await Student.findByPk(studentID);
+    if (!rosterEntry) {
+        throw new Error(
+            `VALIDATION_ERROR — Student ID "${studentID}" not found in university roster. ` +
+            `Import student data first or verify the ID is correct.`
+        );
+    }
+    if (rosterEntry.full_name.toLowerCase() !== studentName.toLowerCase()) {
+        throw new Error(
+            `VALIDATION_ERROR — Name "${studentName}" does not match university ` +
+            `record "${rosterEntry.full_name}" for student ID ${studentID}.`
+        );
+    }
+
+    // Validate CGPA range (must match chaincode constraint)
+    const cgpaNum = parseFloat(cgpa);
+    if (isNaN(cgpaNum) || cgpaNum < 0.0 || cgpaNum > 4.0) {
+        throw new Error('INVALID_INPUT — CGPA must be a number between 0.0 and 4.0');
+    }
+
+    // Check certificate_id doesn't already exist
+    const existing = await Certificate.findByPk(certificateID);
+    if (existing) {
+        throw new Error(
+            `DUPLICATE — Certificate ID "${certificateID}" already exists. Submit a re-issuance request instead.`
+        );
     }
 
     const fileBuffer = req.file.buffer;
@@ -82,11 +120,39 @@ router.post('/certificate', upload.single('pdf'), asyncHandler(async (req, res) 
         studentName,
         studentID,
         department,
-        cgpa:           parseFloat(cgpa),
+        cgpa:           cgpaNum,
         graduationYear: parseInt(graduationYear),
         sha256Hash,     // hash of the PDF — tamper detection
         ipfsCID:        cid,    // IPFS address of the PDF
     });
+
+    // ── Step 4: Send email notification if email provided or student registered ──
+    try {
+        let recipientEmail = null;
+        if (email) {
+            recipientEmail = email;
+        } else {
+            const { User } = require('../database');
+            const studentUser = await User.findOne({ where: { student_id: studentID } });
+            if (studentUser && studentUser.email) {
+                recipientEmail = studentUser.email;
+            }
+        }
+        if (recipientEmail) {
+            const verificationURL = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify/${certificateID}`;
+            sendEmail({
+                to: recipientEmail,
+                ...certificateIssuedEmail({
+                    fullName: studentName,
+                    certificateID,
+                    studentID,
+                    department,
+                    graduationYear: String(graduationYear),
+                    verificationURL,
+                }),
+            });
+        }
+    } catch (_) { /* email failure does not block issuance */ }
 
     res.status(201).json({
         success: true,

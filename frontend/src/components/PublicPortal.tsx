@@ -43,6 +43,7 @@ export default function PublicPortal() {
   const [qrError, setQrError] = useState('');
   const qrRegionId = 'qr-video-reader';
   const html5QrcodeScannerRef = useRef<Html5Qrcode | null>(null);
+  const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     api.getPublicStats().then(setPublicStats).catch(() => {});
@@ -58,6 +59,7 @@ export default function PublicPortal() {
     setSuccessMsg('');
     try {
       const res = await api.verifyCertificateById(certIdInput);
+      console.log("Verification result:", res, certIdInput);
       setResult(res);
     } catch (err: any) {
       setResult({
@@ -115,78 +117,81 @@ export default function PublicPortal() {
 
   // Camera life-cycle
   const startScanning = async () => {
+    if (html5QrcodeScannerRef.current) {
+      return;
+    }
     setCameraState('scanning');
     setQrError('');
-    try {
-      // Small timeout to allow element rendering
-      setTimeout(async () => {
-        try {
-          const scanner = new Html5Qrcode(qrRegionId);
-          html5QrcodeScannerRef.current = scanner;
-          
-          await scanner.start(
-            { facingMode: "environment" },
-            {
-              fps: 10,
-              qrbox: (width, height) => {
-                const size = Math.min(width, height) * 0.7;
-                return { width: size, height: size };
-              }
-            },
-            async (decodedText) => {
-              // Action: stop scanning instantly on decode
-              await stopScanning();
-              
-              // Standard formats: URL containing /verify/<id> or plain ID
-              let discoveredId = decodedText;
-              if (decodedText.includes('/verify/')) {
-                const parts = decodedText.split('/verify/');
-                discoveredId = parts[parts.length - 1];
-              } else if (decodedText.startsWith('http')) {
-                try {
-                  const url = new URL(decodedText);
-                  const pathParts = url.pathname.split('/');
-                  discoveredId = pathParts[pathParts.length - 1];
-                } catch {
-                  // Fallback to text
-                }
-              }
-              
-              setCertIdInput(discoveredId);
-              setActiveTab('id');
-              setSuccessMsg('QR code scanned successfully!');
-              
-              // Auto triggering lookup
-              setVerifying(true);
-              try {
-                const res = await api.verifyCertificateById(discoveredId);
-                setResult(res);
-              } catch (err: any) {
-                setResult({
-                  status: 'Invalid',
-                  message: err.message || 'Error pulling blockchain record.'
-                });
-              } finally {
-                setVerifying(false);
-              }
-            },
-            (errorMessage) => {
-              // Highly verbose, ignore continuous scanner matching errors
+
+    startTimeoutRef.current = setTimeout(async () => {
+      try {
+        const scanner = new Html5Qrcode(qrRegionId);
+        html5QrcodeScannerRef.current = scanner;
+
+        await scanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: (width, height) => {
+              const size = Math.min(width, height) * 0.7;
+              return { width: size, height: size };
             }
-          );
-        } catch (scannerError: any) {
-          console.error("Scanner setup failed", scannerError);
-          setQrError(scannerError.message || "Failed to initialize active camera feed.");
+          },
+          async (decodedText) => {
+            await stopScanning();
+
+            let discoveredId = decodedText;
+            if (decodedText.includes('/verify/')) {
+              const parts = decodedText.split('/verify/');
+              discoveredId = parts[parts.length - 1];
+            } else if (decodedText.startsWith('http')) {
+              try {
+                const url = new URL(decodedText);
+                const pathParts = url.pathname.split('/');
+                discoveredId = pathParts[pathParts.length - 1];
+              } catch {
+                // Fallback to text
+              }
+            }
+
+            setCertIdInput(discoveredId);
+            setActiveTab('id');
+            setSuccessMsg('QR code scanned successfully!');
+
+            setVerifying(true);
+            try {
+              const res = await api.verifyCertificateById(discoveredId);
+              setResult(res);
+            } catch (err: any) {
+              setResult({
+                status: 'Invalid',
+                message: err.message || 'Error pulling blockchain record.'
+              });
+            } finally {
+              setVerifying(false);
+            }
+          },
+          () => {}
+        );
+      } catch (scannerError: any) {
+        console.error("Scanner setup failed", scannerError);
+        const msg = (scannerError.message || '').toLowerCase();
+        if (msg.includes('permission') || msg.includes('not allowed')) {
+          setQrError('Camera permission denied. Please allow camera access in your browser settings.');
+          setCameraState('permission_denied');
+        } else {
+          setQrError(scannerError.message || 'Failed to initialize camera feed.');
           setCameraState('error');
         }
-      }, 300);
-    } catch (e: any) {
-      setQrError("Unable to gain access to camera permissions in browser.");
-      setCameraState('permission_denied');
-    }
+      }
+    }, 300);
   };
 
   const stopScanning = async () => {
+    if (startTimeoutRef.current) {
+      clearTimeout(startTimeoutRef.current);
+      startTimeoutRef.current = null;
+    }
     if (html5QrcodeScannerRef.current && html5QrcodeScannerRef.current.isScanning) {
       try {
         await html5QrcodeScannerRef.current.stop();
@@ -355,7 +360,7 @@ export default function PublicPortal() {
               <div className="w-full max-w-sm overflow-hidden rounded-xl border-2 border-slate-200 dark:border-slate-800 bg-slate-900 text-white relative flex flex-col items-center justify-center min-h-[250px] transition-colors">
                 
                 {/* Embedded HTML5 QR Code hook */}
-                <div id={qrRegionId} className="w-full"></div>
+                <div id={qrRegionId} className="w-full min-h-[250px]"></div>
 
                 {cameraState === 'idle' && (
                   <div className="p-6 text-center space-y-3">
@@ -375,12 +380,30 @@ export default function PublicPortal() {
                   <div className="p-6 text-center space-y-3">
                     <CameraOff className="h-10 w-10 text-red-500 mx-auto" />
                     <p className="text-xs font-semibold text-red-400">Camera search unavailable.</p>
+                    <p className="text-[10px] text-slate-400 max-w-xs">{qrError}</p>
                     <button
                       type="button"
                       onClick={startScanning}
                       className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg cursor-pointer"
                     >
                       Retry
+                    </button>
+                  </div>
+                )}
+
+                {cameraState === 'permission_denied' && (
+                  <div className="p-6 text-center space-y-3">
+                    <CameraOff className="h-10 w-10 text-red-500 mx-auto" />
+                    <p className="text-xs font-semibold text-red-400">Camera permission denied.</p>
+                    <p className="text-[10px] text-slate-400 max-w-xs">
+                      Please allow camera access in your browser settings, then try again.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={startScanning}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg cursor-pointer"
+                    >
+                      Try Again
                     </button>
                   </div>
                 )}
@@ -527,6 +550,62 @@ export default function PublicPortal() {
                   </div>
                 </div>
               </div>
+
+              {/* Blockchain proof metadata */}
+              <div className="bg-slate-50 dark:bg-slate-950 p-5 sm:p-6 border-t border-emerald-100 dark:border-slate-800 transition-colors">
+                <h4 className="text-[10px] font-black text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest mb-4 flex items-center gap-1.5">
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M9 21V9" />
+                  </svg>
+                  BLOCKCHAIN PROOF
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+                  <div className="sm:col-span-2">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Document Hash (SHA-256)</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300 break-all select-all">{result.certificate.sha256_hash}</span>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(result.certificate!.sha256_hash)}
+                        className="shrink-0 p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 cursor-pointer transition-colors"
+                        title="Copy hash"
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">IPFS Storage (Content Identifier)</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-slate-600 dark:text-slate-400 break-all select-all">{result.certificate.ipfs_cid || 'N/A'}</span>
+                      {result.certificate.ipfs_cid && (
+                        <button
+                          onClick={() => navigator.clipboard.writeText(result.certificate!.ipfs_cid!)}
+                          className="shrink-0 p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 cursor-pointer transition-colors"
+                          title="Copy IPFS CID"
+                        >
+                          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {result.certificate.issuer_id && (
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Issuer Identity</span>
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300">{result.certificate.issuer_id}</span>
+                    </div>
+                  )}
+                  {result.certificate.issuer_msp && (
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Fabric Organization</span>
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300">{result.certificate.issuer_msp}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
@@ -574,6 +653,68 @@ export default function PublicPortal() {
                     <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Academic Program</span>
                     <span className="text-sm text-slate-500 dark:text-slate-400 block">{result.certificate.department}</span>
                   </div>
+                </div>
+              </div>
+
+              {/* Blockchain proof metadata */}
+              <div className="bg-slate-50 dark:bg-slate-950 p-5 sm:p-6 border-t border-red-200 dark:border-slate-800 transition-colors">
+                <h4 className="text-[10px] font-black text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest mb-4 flex items-center gap-1.5">
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M9 21V9" />
+                  </svg>
+                  BLOCKCHAIN PROOF
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+                  <div className="sm:col-span-2">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Document Hash (SHA-256)</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300 break-all select-all">{result.certificate.sha256_hash}</span>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(result.certificate!.sha256_hash)}
+                        className="shrink-0 p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 cursor-pointer transition-colors"
+                        title="Copy hash"
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">IPFS Storage (Content Identifier)</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-slate-600 dark:text-slate-400 break-all select-all">{result.certificate.ipfs_cid || 'N/A'}</span>
+                      {result.certificate.ipfs_cid && (
+                        <button
+                          onClick={() => navigator.clipboard.writeText(result.certificate!.ipfs_cid!)}
+                          className="shrink-0 p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 cursor-pointer transition-colors"
+                          title="Copy IPFS CID"
+                        >
+                          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {result.certificate.issuer_id && (
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Issuer Identity</span>
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300">{result.certificate.issuer_id}</span>
+                    </div>
+                  )}
+                  {result.certificate.issuer_msp && (
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Fabric Organization</span>
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300">{result.certificate.issuer_msp}</span>
+                    </div>
+                  )}
+                  {result.certificate.revoked_by && (
+                    <div className="sm:col-span-2">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 font-mono uppercase tracking-widest block">Revoked By</span>
+                      <span className="text-xs font-mono text-slate-700 dark:text-slate-300">{result.certificate.revoked_by}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

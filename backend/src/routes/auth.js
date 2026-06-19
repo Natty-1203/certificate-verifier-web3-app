@@ -1,14 +1,15 @@
 'use strict';
 
+const crypto    = require('crypto');
 const { Router } = require('express');
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const { Op }     = require('sequelize');
-const { User }   = require('../database');
-const { verifyToken } = require('../middleware/auth');
+const { User, Student } = require('../database');
+const { verifyToken }   = require('../middleware/auth');
 const { asyncHandler } = require('../middleware/errorHandler');
 const logger     = require('../utils/logger');
-const { sendEmail, registrationConfirmationEmail } = require('../utils/email');
+const { sendEmail } = require('../utils/email');
 
 const router = Router();
 
@@ -134,81 +135,77 @@ router.post('/change-password',
     })
 );
 
-// ── POST /api/auth/register ────────────────────────────────────────────────────
-router.post('/register', asyncHandler(async (req, res) => {
-    const { username, password, email, student_id, full_name } = req.body;
+// ── POST /api/auth/student-login ───────────────────────────────────────────────
+// Students authenticate by matching name + email against the imported roster.
+router.post('/student-login', asyncHandler(async (req, res) => {
+    const { full_name, email } = req.body;
 
-    if (!username || !password || !email || !student_id) {
+    if (!full_name || !email) {
         return res.status(400).json({
-            message: 'Username, password, email, and student ID are required.'
+            message: 'Full name and email are required.'
         });
     }
 
-    if (password.length < 6) {
-        return res.status(400).json({
-            message: 'Password must be at least 6 characters.'
-        });
-    }
-
-    // Check for existing username
-    const existingUser = await User.findOne({
-        where: { [Op.or]: [{ username }, { email }] }
-    });
-    if (existingUser) {
-        return res.status(409).json({
-            message: 'A user with this username or email already exists.'
-        });
-    }
-
-    // Verify student_id matches a certificate in the database
-    const { Certificate } = require('../database');
-    const cert = await Certificate.findOne({ where: { student_id } });
-    if (!cert) {
-        return res.status(400).json({
-            message: 'No certificate records found for this student ID. Contact the registrar.'
-        });
-    }
-
-    const password_hash = await bcrypt.hash(password, 12);
-    const user = await User.create({
-        username,
-        password_hash,
-        role: 'Student',
-        institution_id: process.env.INSTITUTION_ID || 'AASTU',
-        email,
-        student_id,
+    // Look up student in the roster by name + email (case-insensitive)
+    const rosterEntry = await Student.findOne({
+        where: {
+            email:   { [Op.iLike]: email.trim() },
+            full_name: { [Op.iLike]: full_name.trim() },
+        },
     });
 
-    logger.info(`Student self-registered: ${username} (${student_id})`);
+    if (!rosterEntry) {
+        return res.status(401).json({
+            message: 'No matching student record found. Check your name and email or contact the registrar.'
+        });
+    }
 
-    // Send confirmation email
-    sendEmail(registrationConfirmationEmail({ username, studentID: student_id, fullName: full_name || username }));
+    // Find or auto-create a User record for this student
+    let user = await User.findOne({ where: { student_id: rosterEntry.student_id } });
 
-    res.status(201).json({
-        message: 'Account created successfully. You can now log in.',
+    if (!user) {
+        const password_hash = await bcrypt.hash(crypto.randomUUID(), 12);
+        user = await User.create({
+            id:             `stu_${rosterEntry.student_id.replace(/[^a-zA-Z0-9]/g, '_')}`,
+            username:       rosterEntry.email,
+            password_hash,
+            role:           'Student',
+            institution_id: process.env.INSTITUTION_ID || 'AASTU',
+            email:          rosterEntry.email,
+            student_id:     rosterEntry.student_id,
+        });
+        logger.info(`Student account auto-created: ${rosterEntry.email} (${rosterEntry.student_id})`);
+    }
+
+    // Issue JWT
+    const token = jwt.sign(
+        {
+            id:             user.id,
+            username:       user.username,
+            role:           user.role,
+            institution_id: user.institution_id,
+            student_id:     user.student_id || null,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
+    );
+
+    logger.info(`Student login: ${user.username} (${rosterEntry.student_id})`);
+
+    res.status(200).json({
+        message: 'Login successful',
+        token,
+        user: {
+            id:             user.id,
+            username:       user.username,
+            role:           user.role,
+            institution_id: user.institution_id,
+            is_active:      user.is_active,
+            email:          user.email || null,
+            student_id:     user.student_id || null,
+        },
     });
 }));
-
-// ── POST /api/auth/link-student-id ─────────────────────────────────────────────
-router.patch('/link-student-id',
-    verifyToken,
-    asyncHandler(async (req, res) => {
-        const { student_id } = req.body;
-        if (!student_id) {
-            return res.status(400).json({ message: 'Student ID is required.' });
-        }
-
-        const user = await User.findByPk(req.user.id);
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        await user.update({ student_id });
-        logger.info(`Student ID linked: ${user.username} -> ${student_id}`);
-
-        res.json({ message: 'Student ID linked successfully.', student_id });
-    })
-);
 
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
 router.post('/logout', verifyToken, asyncHandler(async (req, res) => {

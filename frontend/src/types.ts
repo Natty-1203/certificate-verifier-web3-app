@@ -1,5 +1,27 @@
 export type Role = 'Admin' | 'Issuer' | 'Student';
 
+export interface Ticket {
+  id: string;
+  certificate_id?: string;
+  student_id: string;
+  student_name: string;
+  subject: string;
+  status: 'Open' | 'InReview' | 'Approved' | 'Rejected' | 'Resolved';
+  assigned_to?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TicketMessage {
+  id: string;
+  ticket_id: string;
+  sender_id: string;
+  sender_name: string;
+  sender_role: string;
+  message: string;
+  created_at: string;
+}
+
 export interface User {
   id: string;
   username: string;
@@ -25,6 +47,9 @@ export interface Certificate {
   revocation_date?: string;
   revocation_reason?: string;
   sha256_hash: string;
+  issuer_id?: string;
+  issuer_msp?: string;
+  revoked_by?: string;
 }
 
 export interface VerificationResult {
